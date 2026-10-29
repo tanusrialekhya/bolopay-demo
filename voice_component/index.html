@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:transparent;text-align:center;font-family:system-ui,sans-serif;color:#122b52}
+  #wrap{padding:6px 0 2px}
+  #mic{width:108px;height:108px;border-radius:50%;border:6px solid #fff;color:#fff;font-size:46px;cursor:pointer;
+    background:linear-gradient(145deg,#10a5ff,#174cf2);box-shadow:0 10px 28px #1265f177;
+    touch-action:manipulation;user-select:none;-webkit-user-select:none;transition:transform .15s,background .2s}
+  #mic:active{transform:scale(.95)}
+  #label{margin-top:8px;font-weight:800;min-height:28px;line-height:1.5}
+  body[data-state="ready"] #mic{animation:glow 2.4s infinite}
+  body[data-state="listening"] #mic{background:linear-gradient(145deg,#ff5a5f,#e0263d);animation:ring 1.1s infinite}
+  body[data-state="processing"] #mic{background:linear-gradient(145deg,#f7b733,#f08a00);cursor:wait}
+  body[data-state="speaking"] #mic{background:linear-gradient(145deg,#2ecf7a,#12a05a);animation:talk .6s infinite}
+  body[data-state="off"] #mic{background:#b9c4d6;box-shadow:none;cursor:not-allowed}
+  body[data-state="processing"] #icon{display:inline-block;animation:spin 1s linear infinite}
+  @keyframes glow{0%{box-shadow:0 0 0 0 #1265f166}70%{box-shadow:0 0 0 24px #1265f100}100%{box-shadow:0 0 0 0 #1265f100}}
+  @keyframes ring{0%{box-shadow:0 0 0 0 #ff5a5f99}100%{box-shadow:0 0 0 28px #ff5a5f00}}
+  @keyframes talk{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body data-state="ready">
+<div id="wrap">
+  <button id="mic" aria-label="Microphone"><span id="icon">🎙</span></button>
+  <div id="label" aria-live="polite"></div>
+</div>
+<script>
+const post = (type, extra) => window.parent.postMessage(Object.assign({isStreamlitMessage: true, type}, extra), "*");
+const ST = {ready: () => post("streamlit:componentReady", {apiVersion: 1}),
+            height: h => post("streamlit:setFrameHeight", {height: h}),
+            value: v => post("streamlit:setComponentValue", {value: v, dataType: "json"})};
+
+const S = {args: {}, state: "ready", ws: null, wait: null, note: "", cur: null, live: null, playCtx: null,
+           node: null, audioEl: null, font: "", lastSay: "", pendingSay: null,
+           stream: null, ctx: null, src: null, proc: null, rec: false, frames: [], noise: null, thr: 0.015,
+           heardFrames: 0, lastVoiceAt: 0, startT: 0, timer: null, pressAt: 0, pressStarted: false};
+const $mic = document.getElementById("mic"), $label = document.getElementById("label"), $icon = document.getElementById("icon");
+const L = k => (S.args.labels || {})[k] || "";
+
+function applyFont() {
+  const f = S.args.font;
+  if (!f || S.font === f) return;
+  S.font = f;
+  let l = document.getElementById("gf");
+  if (!l) { l = document.createElement("link"); l.id = "gf"; l.rel = "stylesheet"; document.head.appendChild(l); }
+  l.href = "https://fonts.googleapis.com/css2?family=" + f.replace(/ /g, "+") + ":wght@700;800&display=swap";
+  document.body.style.fontFamily = '"' + f + '",system-ui,sans-serif';
+}
+function render() {
+  applyFont();
+  const off = !!S.args.muted && S.state === "ready";
+  const shown = off ? "off" : S.state;
+  document.body.dataset.state = shown;
+  $icon.textContent = {ready: "🎙", listening: "⏺", processing: "⏳", speaking: "🔊", off: "🔒"}[shown];
+  $label.textContent = S.note || {ready: L("tap"), listening: L("st_listen"), processing: L("st_proc"),
+                                  speaking: L("st_speak"), off: L("st_pin")}[shown];
+  $label.style.fontSize = (S.args.font_px || 18) + "px";
+  $mic.disabled = off || S.state === "processing";
+  ST.height(176 + Math.max(0, (S.args.font_px || 18) - 18) * 2);
+}
+function setState(s, note) {
+  S.state = s; S.note = note || ""; render();
+  if (s === "ready" && S.pendingSay) { const p = S.pendingSay; S.pendingSay = null; setTimeout(() => doSay(p), 60); }
+}
+
+window.addEventListener("message", e => {
+  if (!e.data || e.data.type !== "streamlit:render") return;
+  S.args = e.data.args || {};
+  if (S.args.muted) { if (S.state === "listening") { S.rec = false; clearInterval(S.timer); S.frames = []; setState("ready"); } releaseMic(); }
+  render();
+  const sy = S.args.say;
+  if (sy && sy.id && !seenSay(sy.id)) doSay(sy);
+});
+function seenSay(id) {
+  if (S.lastSay === id) return true;
+  S.lastSay = id;
+  try { if (sessionStorage.getItem("bp_say") === id) return true; sessionStorage.setItem("bp_say", id); } catch (e) {}
+  return false;
+}
+
+// ---------- audio out ----------
+function getPlayCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!S.playCtx) S.playCtx = new AC();
+  return S.playCtx;
+}
+function unlockAudio() {
+  try {
+    const c = getPlayCtx(); if (c.state === "suspended") c.resume();
+    const s = c.createBufferSource(); s.buffer = c.createBuffer(1, 1, 22050); s.connect(c.destination); s.start(0);
+  } catch (e) {}
+  try { window.speechSynthesis && speechSynthesis.getVoices(); } catch (e) {}
+}
+function liveChunk(buf) {
+  const ctx = getPlayCtx(), Ls = S.live;
+  if (ctx.state === "suspended") ctx.resume();
+  let u8 = new Uint8Array(buf);
+  if (Ls.carry !== null) { const m = new Uint8Array(u8.length + 1); m[0] = Ls.carry; m.set(u8, 1); u8 = m; Ls.carry = null; }
+  const n = u8.length >> 1;
+  if (u8.length & 1) Ls.carry = u8[u8.length - 1];
+  if (!n) return;
+  const i16 = new Int16Array(u8.buffer.slice(u8.byteOffset, u8.byteOffset + n * 2));
+  const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = i16[i] / 32768;
+  const ab = ctx.createBuffer(1, n, Ls.rate); ab.copyToChannel(f, 0);
+  const src = ctx.createBufferSource(); src.buffer = ab; src.connect(ctx.destination);
+  const t = Math.max(ctx.currentTime + 0.06, Ls.next);
+  src.start(t); Ls.next = t + ab.duration; Ls.nodes.push(src);
+}
+async function playBytes(buf, onEnd) {
+  const u8 = new Uint8Array(buf);
+  const mime = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) === "RIFF" ? "audio/wav" : "audio/mpeg";
+  try {
+    const ctx = getPlayCtx(); if (ctx.state === "suspended") await ctx.resume();
+    const node = ctx.createBufferSource();
+    node.buffer = await ctx.decodeAudioData(buf.slice(0)); node.connect(ctx.destination);
+    node.onended = onEnd; S.node = node; node.start(0); return true;
+  } catch (e) { console.warn("WebAudio failed:", e); }
+  try {
+    const url = URL.createObjectURL(new Blob([u8], {type: mime})), a = new Audio(url);
+    a.onended = () => { URL.revokeObjectURL(url); onEnd(); }; S.audioEl = a; await a.play(); return true;
+  } catch (e) { console.warn("<audio> failed:", e); }
+  return false;
+}
+function browserSpeak(c, done) {
+  if (!window.speechSynthesis || !c.reply) return done();
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(c.reply);
+  u.lang = c.lang || "en-IN"; u.onend = done; u.onerror = done; speechSynthesis.speak(u);
+}
+function stopSpeaking() {
+  try { (S.live ? S.live.nodes : []).forEach(n => { try { n.stop(); } catch (e) {} }); } catch (e) {}
+  try { S.node && (S.node.onended = null, S.node.stop()); } catch (e) {}
+  try { S.audioEl && (S.audioEl.onended = null, S.audioEl.pause()); } catch (e) {}
+  try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) {}
+  S.node = S.audioEl = S.live = S.cur = null; clearTimeout(S.wait); setState("ready");
+}
+
+// ---------- the app asks the assistant to say something ----------
+async function doSay(sy) {
+  if (!sy || !sy.text) return;
+  if (S.state !== "ready") { S.pendingSay = sy; return; }
+  S.cur = {transcript: "", reply: sy.text, lang: sy.lang || "en-IN", actions: [], audio: null, sent: true};
+  S.live = null;
+  setState("speaking");
+  try {
+    const ws = await getWs();
+    clearTimeout(S.wait);
+    S.wait = setTimeout(() => { if (S.cur) endCycle(); }, 25000);
+    ws.send(JSON.stringify({type: "speak", text: sy.text, language: sy.lang || "en-IN"}));
+  } catch (e) { const c = S.cur; browserSpeak(c, () => { if (S.cur === c) endCycle(); }); }
+}
+
+// ---------- microphone: opened once, true 16 kHz, adaptive silence detection ----------
+async function ensureMic() {
+  if (S.stream && S.stream.getTracks().some(t => t.readyState === "live") && S.ctx && S.ctx.state !== "closed") {
+    if (S.ctx.state === "suspended") await S.ctx.resume();
+    return true;
+  }
+  releaseMic();
+  try {
+    S.stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true,
+      noiseSuppression: true, autoGainControl: true}});
+  } catch (e) { return false; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  try { S.ctx = new AC({sampleRate: 16000}); } catch (e) { S.ctx = new AC(); }
+  if (S.ctx.resume) await S.ctx.resume();
+  S.src = S.ctx.createMediaStreamSource(S.stream);
+  S.proc = S.ctx.createScriptProcessor(2048, 1, 1);
+  S.proc.onaudioprocess = ev => {
+    if (!S.rec) return;
+    const d = ev.inputBuffer.getChannelData(0);
+    let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    const rms = Math.sqrt(sum / d.length);
+    if (S.frames.length < 3) {
+      S.noise = S.noise === null ? rms : Math.min(S.noise, rms);
+      S.thr = Math.min(0.05, Math.max(0.012, S.noise * 3));
+    }
+    const voiced = rms > S.thr;
+    if (voiced) { S.heardFrames++; S.lastVoiceAt = Date.now(); }
+    S.frames.push({d: new Float32Array(d), v: voiced});
+  };
+  S.src.connect(S.proc); S.proc.connect(S.ctx.destination);
+  return true;
+}
+function releaseMic() {
+  S.rec = false;
+  try { S.proc && S.proc.disconnect(); S.src && S.src.disconnect(); } catch (e) {}
+  if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+  if (S.ctx) { try { S.ctx.close(); } catch (e) {} }
+  S.proc = S.src = S.stream = S.ctx = null;
+}
+async function startListening() {
+  if (S.args.muted || S.state !== "ready") return;
+  setState("listening", "…");
+  const ok = await ensureMic();
+  if (!ok) { setState("ready", L("mic_denied")); return; }
+  if (S.state !== "listening" || S.args.muted) { setState("ready"); return; }
+  S.frames = []; S.noise = null; S.thr = 0.015; S.heardFrames = 0;
+  S.startT = S.lastVoiceAt = Date.now(); S.rec = true;
+  setState("listening");
+  S.timer = setInterval(() => {
+    const now = Date.now();
+    if (S.heardFrames >= 3 && now - S.lastVoiceAt > 1200) finish(true);
+    else if (S.heardFrames < 3 && now - S.startT > 7000) finish(false);
+    else if (now - S.startT > 15000) finish(true);
+  }, 100);
+}
+function finish(doSend) {
+  if (S.state !== "listening") return;
+  S.rec = false; clearInterval(S.timer); S.timer = null;
+  const frames = S.frames; S.frames = [];
+  const rate = S.ctx ? S.ctx.sampleRate : 16000;
+  if (!doSend || S.heardFrames < 3) { setState("ready"); return; }
+  const first = Math.max(0, frames.findIndex(f => f.v) - 3);
+  let last = frames.length - 1; while (last > 0 && !frames[last].v) last--;
+  const kept = frames.slice(first, Math.min(frames.length, last + 5)).map(f => f.d);
+  setState("processing");
+  sendToBackend(encodeWav(kept, rate));
+}
+function encodeWav(chunks, inRate) {
+  let len = 0; chunks.forEach(c => len += c.length);
+  const all = new Float32Array(len); let o = 0; chunks.forEach(c => { all.set(c, o); o += c.length; });
+  let peak = 0; for (let i = 0; i < len; i++) { const a = Math.abs(all[i]); if (a > peak) peak = a; }
+  const gain = peak > 0.001 && peak < 0.7 ? Math.min(8, 0.9 / peak) : 1;
+  const outRate = 16000, ratio = inRate / outRate, n = Math.floor(len / ratio), pcm = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * ratio), b = Math.min(len, Math.max(a + 1, Math.floor((i + 1) * ratio)));
+    let s = 0; for (let j = a; j < b; j++) s += all[j];
+    const v = Math.max(-1, Math.min(1, gain * s / (b - a)));
+    pcm[i] = v < 0 ? v * 32768 : v * 32767;
+  }
+  const buf = new ArrayBuffer(44 + n * 2), dv = new DataView(buf);
+  const w = (p, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(p + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, outRate, true); dv.setUint32(28, outRate * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, "data"); dv.setUint32(40, n * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return buf;
+}
+function b64(buf) {
+  const b = new Uint8Array(buf); let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// ---------- backend ----------
+function getWs() {
+  return new Promise((resolve, reject) => {
+    if (S.ws && S.ws.readyState === 1) return resolve(S.ws);
+    const ws = new WebSocket(S.args.ws_url); ws.binaryType = "arraybuffer";
+    const t = setTimeout(() => reject(new Error("timeout")), 5000);
+    ws.onopen = () => { clearTimeout(t); S.ws = ws; resolve(ws); };
+    ws.onerror = () => { clearTimeout(t); reject(new Error("ws")); };
+    ws.onmessage = onReply;
+    ws.onclose = () => { if (S.ws === ws) S.ws = null; };
+  });
+}
+async function sendToBackend(buf) {
+  S.cur = {transcript: "", reply: "", lang: "", actions: [], audio: null, sent: false};
+  S.live = null;
+  try {
+    const ws = await getWs();
+    clearTimeout(S.wait);
+    S.wait = setTimeout(() => { if (S.cur) endCycle(); }, 40000);
+    const A = S.args;
+    ws.send(JSON.stringify({audio: b64(buf), language: A.language, screen: A.screen, stage: A.stage,
+      muted: !!A.muted, payee: A.payee, amount: A.amount, history: A.history || []}));
+  } catch (e) { S.cur = null; setState("ready", L("st_err")); }
+}
+function endCycle(note) { clearTimeout(S.wait); S.cur = null; S.live = null; setState("ready", note || ""); }
+function deliver() {
+  const c = S.cur; if (!c || c.sent) return; c.sent = true;
+  ST.value({id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+            transcript: c.transcript, reply: c.reply, actions: c.actions});
+}
+function onReply(ev) {
+  if (!S.cur) return;
+  if (typeof ev.data !== "string") { if (S.live) liveChunk(ev.data); else S.cur.audio = ev.data; return; }
+  let d; try { d = JSON.parse(ev.data); } catch (e) { endCycle(); return; }
+  switch (d.type) {
+    case "transcript": S.cur.transcript = d.text || ""; break;
+    case "action":
+      if (d.said) S.cur.transcript = d.said;
+      S.cur.reply = d.reply || ""; S.cur.lang = d.lang || ""; S.cur.actions = d.actions || []; deliver(); break;
+    case "audio_start": S.live = {rate: d.rate || 16000, next: 0, nodes: [], carry: null}; setState("speaking"); break;
+    case "warn": endCycle(); break;
+    case "error": console.error("backend:", d.message); endCycle(String(d.message || "Error").slice(0, 80)); break;
+    case "done": replyDone(); break;
+  }
+}
+function replyDone() {
+  clearTimeout(S.wait);
+  const c = S.cur; if (!c) return;
+  const fin = () => { if (S.cur === c) { S.cur = null; S.live = null; S.node = S.audioEl = null; setState("ready"); } };
+  if (S.live) {
+    const ms = Math.max(0, (S.live.next - getPlayCtx().currentTime) * 1000) + 200;
+    setTimeout(fin, ms); return;
+  }
+  if (c.audio && c.audio.byteLength > 100) {
+    setState("speaking");
+    playBytes(c.audio, fin).then(ok => { if (!ok) browserSpeak(c, fin); });
+    setTimeout(fin, 30000); return;
+  }
+  if (c.reply) { setState("speaking"); browserSpeak(c, fin); setTimeout(fin, 20000); return; }
+  fin();
+}
+
+// ---------- the button ----------
+function press() {
+  if (S.args.muted) return;
+  unlockAudio();
+  if (S.state === "ready") { S.pressStarted = true; startListening(); }
+  else if (S.state === "listening") finish(true);
+  else if (S.state === "speaking") stopSpeaking();
+}
+$mic.addEventListener("pointerdown", e => { e.preventDefault(); S.pressAt = Date.now(); S.pressStarted = false; press(); });
+["pointerup", "pointercancel", "pointerleave"].forEach(ev => $mic.addEventListener(ev, () => {
+  if (S.pressStarted && S.state === "listening" && Date.now() - S.pressAt > 900) finish(true);
+  S.pressStarted = false;
+}));
+$mic.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); press(); } });
+
+ST.ready(); render();
+</script>
+</body>
+</html>

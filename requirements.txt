@@ -1,0 +1,13 @@
+streamlit
+streamlit-mic-recorder
+python-dotenv
+sounddevice
+soundfile
+gnani-vachana
+langchain-groq
+langchain-core
+opencv-python-headless
+numpy
+fastapi
+uvicorn[standard]
+websockets

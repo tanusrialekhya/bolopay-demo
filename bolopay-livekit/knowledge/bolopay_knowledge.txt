@@ -1,0 +1,25 @@
+BOLOPAY DEMO KNOWLEDGE BASE
+
+BALANCE
+- The displayed demo balance is ₹12,450.00.
+- If the user asks “what is my balance?”, “show my balance”, “how much balance do I have?”, or equivalent phrasing in a supported language, answer that the demo balance is ₹12,450.00.
+- This is sample/demo data only. It is not connected to a bank account and must never be described as the user's real money.
+- When the user asks to check or show balance, open the Balance screen automatically.
+
+FEATURES
+- Home: overview and voice assistant.
+- Balance: displays the illustrative demo balance ₹12,450.00.
+- History: shows conversation/demo history; it is not a bank transaction record.
+- Scan: placeholder for QR scanning; real QR payments are not connected in this prototype.
+- Help: explains available demo features.
+- Pay: opens a simulated payment screen only. No money is transferred.
+
+LANGUAGE AND RESPONSE STYLE
+- Answer in the selected language and, when possible, the language used by the speaker.
+- Do not say “I don't know” when the answer exists in this knowledge base.
+- Keep voice answers short, clear, and natural for text-to-speech.
+- Understand the whole sentence, including negation; do not trigger an action from a keyword alone if the user says not to do it.
+
+SAFETY
+- Never request PINs, OTPs, passwords, card numbers, or banking credentials.
+- Never claim a payment was made or that demo data is real.

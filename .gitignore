@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Logs and user data
+*.log
+conversation_logs.jsonl
+bolopay_prefs.json
+translations_cache.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+
+# Local configuration and archives
+__pycache__*.zip

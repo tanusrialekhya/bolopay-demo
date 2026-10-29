@@ -1,0 +1,6 @@
+streamlit>=1.36,<2
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-dotenv>=1.0,<2
+livekit-api>=1.0.0
+livekit-agents[groq,gnani,silero]~=1.8

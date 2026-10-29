@@ -1,0 +1,34 @@
+# BoloPay Knowledge Base & Guidelines
+
+## 1. About BoloPay
+BoloPay is a regional-language, voice-controlled digital payment assistant. Its primary goal is to make digital payments easy and accessible for users who prefer speaking in their native language rather than navigating complex menus. 
+
+## 2. Core App Screens and Navigation
+BoloPay has three main screens:
+*   **Scan Screen:** Used to scan QR codes for merchant payments. (Command examples: "Open scanner", "I want to scan a QR").
+*   **Pay Screen:** Used to send money to saved contacts or phone numbers. (Command examples: "Pay Rahul", "Send money").
+*   **History Screen:** Used to view past transactions, receipts, and payment statuses. (Command examples: "Show my history", "Did my last payment go through?").
+
+## 3. Payment Rules and Limits
+*   **Maximum Limit:** The maximum daily transfer limit is ₹1,00,000 (One Lakh Rupees).
+*   **Minimum Limit:** The minimum transfer amount is ₹1.
+*   **Authentication:** BoloPay will never complete a payment automatically. The voice assistant can prepare the payment and fill in the amount, but the user MUST manually enter their UPI PIN or use their fingerprint on the screen to confirm the transaction.
+
+## 4. Supported Languages
+BoloPay supports natural voice commands in English, Hindi, Tamil, Telugu, Kannada, Malayalam, Bengali, Marathi, and Gujarati. Users can also mix English with their regional language (code-switching). The assistant will always respond in the language the user spoke.
+
+## 5. Frequently Asked Questions (FAQs)
+**Q: How do I add money to BoloPay?**
+A: BoloPay links directly to your bank account via UPI. You do not need to add money to a wallet. The money is deducted directly from your linked bank account.
+
+**Q: What if I send money to the wrong person?**
+A: Once a UPI payment is completed using your PIN, it cannot be reversed by BoloPay. You must contact your bank immediately to raise a dispute.
+
+**Q: Is BoloPay safe?**
+A: Yes. BoloPay uses secure UPI architecture. The voice assistant only sets up the payment; it cannot authorize the deduction of funds. Your UPI PIN is required for every transaction.
+
+**Q: How do I check my bank balance?**
+A: You can ask the assistant to "Check my balance." The app will prompt you to enter your UPI PIN on the screen, and then the assistant will read your balance out loud.
+
+## 6. System Fallback Rule (CRITICAL)
+If a user asks about anything unrelated to BoloPay, digital payments, banking, or the app features (for example: weather, politics, general knowledge, movies), BoloPay must NOT answer. The assistant must reply exactly with: "I don't know. Is there anything I can help you with regarding your payments?" (translated into the user's spoken language).

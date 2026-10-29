@@ -1,0 +1,38 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<style>
+html,body{margin:0;padding:0;background:transparent;font-family:Inter,system-ui,sans-serif;color:#16315c;text-align:center}
+#wrap{padding:10px 0 4px}#mic{width:100px;height:100px;border:0;border-radius:50%;color:white;font-size:42px;background:linear-gradient(145deg,#10a5ff,#174cf2);box-shadow:0 8px 22px #1265f155;cursor:pointer;touch-action:manipulation}
+#mic:disabled{opacity:.55;cursor:wait}#label{font-size:17px;font-weight:750;margin-top:9px;min-height:24px}#sub{font-size:12px;color:#687b98;margin:4px auto;max-width:360px}
+body[data-state="listening"] #mic{background:linear-gradient(145deg,#ff5a5f,#e0263d);animation:ring 1.2s infinite}body[data-state="processing"] #mic{background:linear-gradient(145deg,#f7b733,#f08a00)}body[data-state="speaking"] #mic{background:linear-gradient(145deg,#2ecf7a,#12a05a)}
+@keyframes ring{0%{box-shadow:0 0 0 0 #ff5a5f88}100%{box-shadow:0 0 0 24px #ff5a5f00}}
+</style></head><body data-state="ready"><div id="wrap"><button id="mic" aria-label="Tap to speak">🎙️</button><div id="label">Tap to speak</div><div id="sub">The microphone stops after a short pause.</div><div id="audio"></div></div>
+<script>
+const post=(type,extra={})=>parent.postMessage(Object.assign({isStreamlitMessage:true,type},extra),"*");
+const ST={ready:()=>post("streamlit:componentReady",{apiVersion:1}),height:h=>post("streamlit:setFrameHeight",{height:h}),value:v=>post("streamlit:setComponentValue",{value:v,dataType:"json"})};
+const S={args:{},room:null,track:null,stream:null,ctx:null,analyser:null,raf:0,heard:false,lastVoice:0,startAt:0,state:"ready",turnId:0,transcript:"",reply:"",actions:[],identity:"",audioEls:[]};
+const mic=document.getElementById('mic'), label=document.getElementById('label'), sub=document.getElementById('sub');
+function state(s,t){S.state=s;document.body.dataset.state=s;label.textContent=t||({ready:'Tap to speak',connecting:'Connecting…',listening:'Listening…',processing:'Thinking…',speaking:'BoloPay is speaking…',error:'Connection error'})[s]||s;mic.disabled=['connecting','processing'].includes(s);mic.textContent=({ready:'🎙️',connecting:'⏳',listening:'⏺',processing:'⏳',speaking:'🔊',error:'⚠️'})[s]||'🎙️';ST.height(185);}
+function postValue(){ST.value({id:Date.now()+'-'+Math.random().toString(36).slice(2,8),transcript:S.transcript,reply:S.reply,actions:S.actions});}
+window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;S.args=e.data.args||{};ST.height(185);});
+async function ensureRoom(){
+ if(S.room&&S.room.state===LivekitClient.ConnectionState.Connected)return;
+ const u=new URL(S.args.token_url);u.searchParams.set('language',S.args.language||'en-IN');u.searchParams.set('identity','web-'+Math.random().toString(36).slice(2,10));
+ const resp=await fetch(u.toString());if(!resp.ok)throw new Error('Token service error '+resp.status);const data=await resp.json();
+ const room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});S.room=room;
+ room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,publication,participant)=>{if(track.kind==='audio'){const el=track.attach();el.autoplay=true;el.controls=false;document.getElementById('audio').appendChild(el);S.audioEls.push(el);}});
+ room.on(LivekitClient.RoomEvent.TrackUnsubscribed,track=>track.detach().forEach(el=>el.remove()));
+ room.on(LivekitClient.RoomEvent.DataReceived,(payload,participant,kind,topic)=>{try{const d=JSON.parse(new TextDecoder().decode(payload));if(d.type==='bolopay_action'){S.actions.push(d);postValue();}else if(d.type==='bolopay_transcript'){S.transcript=d.text||'';if(d.final)postValue();}else if(d.type==='bolopay_reply'){S.reply=d.text||'';postValue();}}catch(err){console.warn('Invalid data packet',err);}});
+ room.on(LivekitClient.RoomEvent.Disconnected,()=>{S.room=null;});
+ await room.connect(data.url,data.token);await room.startAudio().catch(()=>{});
+}
+async function startMic(){
+ try{state('connecting');await ensureRoom();const track=await LivekitClient.createLocalAudioTrack({echoCancellation:true,noiseSuppression:true,autoGainControl:true});S.track=track;await S.room.localParticipant.publishTrack(track);S.stream=new MediaStream([track.mediaStreamTrack]);S.ctx=new (window.AudioContext||window.webkitAudioContext)();await S.ctx.resume();const src=S.ctx.createMediaStreamSource(S.stream);S.analyser=S.ctx.createAnalyser();S.analyser.fftSize=1024;src.connect(S.analyser);S.heard=false;S.startAt=S.lastVoice=Date.now();S.transcript='';S.reply='';S.actions=[];state('listening');watchSilence();}
+ catch(e){console.error(e);state('error','Cannot connect or access microphone. Check permissions and service settings.');sub.textContent=String(e.message||e).slice(0,180);cleanupMic();}}
+function watchSilence(){const buf=new Uint8Array(S.analyser.fftSize);const tick=()=>{if(S.state!=='listening'||!S.analyser)return;S.analyser.getByteTimeDomainData(buf);let sum=0;for(let i=0;i<buf.length;i++){const x=(buf[i]-128)/128;sum+=x*x;}const rms=Math.sqrt(sum/buf.length);if(rms>0.018){S.heard=true;S.lastVoice=Date.now();}
+ const now=Date.now();if(S.heard&&now-S.lastVoice>1300){finishMic(true);return;}if(!S.heard&&now-S.startAt>7000){finishMic(false);return;}if(now-S.startAt>20000){finishMic(true);return;}S.raf=requestAnimationFrame(tick);};S.raf=requestAnimationFrame(tick);}
+async function finishMic(send){if(S.state!=='listening')return;cancelAnimationFrame(S.raf);state('processing',send?'Processing your request…':'No speech detected. Tap to try again.');await cleanupMic();if(!send){state('ready','No speech detected. Tap to try again.');return;}setTimeout(()=>{if(S.state==='processing')state('ready','Tap to speak again');},60000);}
+async function cleanupMic(){cancelAnimationFrame(S.raf);if(S.track){try{if(S.room)await S.room.localParticipant.unpublishTrack(S.track);}catch(e){}try{S.track.stop();}catch(e){}S.track=null;}if(S.ctx){try{await S.ctx.close();}catch(e){}S.ctx=null;}S.stream=null;S.analyser=null;}
+mic.addEventListener('click',async()=>{if(S.state==='ready'||S.state==='error'){await startMic();return;}if(S.state==='listening'){await finishMic(true);return;}if(S.state==='speaking'){if(S.room){await S.room.disconnect();S.room=null;}state('ready','Stopped. Tap to speak again');}});
+ST.ready();state('ready');
+</script></body></html>

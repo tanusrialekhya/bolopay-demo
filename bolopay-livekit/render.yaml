@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: bolopay-token-service
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn token_server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "*"
+  - type: worker
+    name: bolopay-livekit-agent
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python agent.py start
+    envVars:
+      - key: GNANI_API_KEY
+        sync: false
+      - key: GNANI_STT_API_KEY
+        sync: false
+      - key: GNANI_TTS_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GNANI_TTS_MODEL
+        value: timbre-v2.5
+      - key: GNANI_VOICE
+        value: Nalini
